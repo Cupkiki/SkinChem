@@ -1,0 +1,760 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { base44 } from '@/api/base44Client';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { 
+  Sparkles, Shield, Clock, AlertTriangle, CheckCircle2, 
+  ChevronRight, Search, Filter, Sun, Moon, Beaker, 
+  ArrowRight, Zap, Lock, Crown, X, XCircle
+} from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { cn } from '@/lib/utils';
+import { Link } from 'react-router-dom';
+import { createPageUrl } from '@/utils';
+import IngredientCard from '@/components/skincare/IngredientCard';
+import FamilyCard from '@/components/skincare/FamilyCard';
+import ActiveInstanceModal from '@/components/skincare/ActiveInstanceModal';
+import IngredientDetailModal from '@/components/skincare/IngredientDetailModal';
+import CompatibilityResult from '@/components/skincare/CompatibilityResult';
+import RoutineBuilder from '@/components/skincare/RoutineBuilder';
+import BarrierHealthMeter from '@/components/skincare/BarrierHealthMeter';
+import SkinTypeSelector from '@/components/skincare/SkinTypeSelector';
+import SkinConditionSelector from '@/components/skincare/SkinConditionSelector';
+import RiskScorePanel from '@/components/skincare/RiskScorePanel';
+import ProductRecommendations from '@/components/skincare/ProductRecommendations';
+import RoutineGenerator from '@/components/skincare/RoutineGenerator';
+import ProgressionPanel from '@/components/skincare/ProgressionPanel';
+import StaticRoutineSuggestion from '@/components/skincare/StaticRoutineSuggestion';
+
+export default function Home() {
+  const [selectedIngredients, setSelectedIngredients] = useState([]);
+  const [activeInstances, setActiveInstances] = useState([]);
+  const [configuringFamily, setConfiguringFamily] = useState(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [skinType, setSkinType] = useState('normal');
+  const [skinConditions, setSkinConditions] = useState([]);
+  const [activeTab, setActiveTab] = useState('ingredients');
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [skinGoal, setSkinGoal] = useState('balanced');
+  const [experienceLevel, setExperienceLevel] = useState('intermediate');
+  const [detailIngredient, setDetailIngredient] = useState(null);
+
+  const { data: allIngredients = [], isLoading: ingredientsLoading } = useQuery({
+    queryKey: ['ingredients'],
+    queryFn: () => base44.entities.IngredientV2.list()
+  });
+
+  const { data: userProfile } = useQuery({
+    queryKey: ['userProfile'],
+    queryFn: async () => {
+      const user = await base44.auth.me();
+      const profiles = await base44.entities.UserProfile.filter({ user_email: user.email });
+      return profiles[0] || null;
+    }
+  });
+
+  const isPremium = userProfile?.subscription_tier === 'premium' || userProfile?.subscription_tier === 'professional';
+  const isProfessional = userProfile?.subscription_tier === 'professional';
+
+  // Filter ingredients based on subscription status
+  const ingredients = useMemo(() => {
+    if (isProfessional) {
+      // Professional: Show all ingredients with detailed view
+      return allIngredients;
+    }
+
+    // Free & Premium: Show only core active families
+    const coreActiveFamilies = ['RETINOID', 'AHA', 'BHA', 'NIACINAMIDE', 'VITC_LAA', 'AZELAIC'];
+
+    return allIngredients.filter(ing => {
+      return coreActiveFamilies.includes(ing.family);
+    });
+  }, [allIngredients, isProfessional]);
+
+  const { data: familyRules = [] } = useQuery({
+    queryKey: ['familyRules'],
+    queryFn: () => base44.entities.FamilyRule.list()
+  });
+
+  const { data: compatibilityRules = [] } = useQuery({
+    queryKey: ['compatibilityRules'],
+    queryFn: () => base44.entities.CompatibilityRule.list()
+  });
+
+  const { data: progressionState } = useQuery({
+    queryKey: ['progressionState'],
+    queryFn: async () => {
+      const user = await base44.auth.me();
+      const states = await base44.entities.ProgressionState.filter({ user_email: user.email });
+      return states[0] || null;
+    }
+  });
+
+  // Filter and sort ingredients based on search
+  const filteredIngredients = useMemo(() => {
+    const coreActiveFamilies = ['RETINOID', 'AHA', 'BHA', 'PHA', 'BPO', 'AZELAIC', 'NIACINAMIDE', 'VITC_DERIV', 'VITC_LAA'];
+
+    const filtered = ingredients.filter(ing => {
+      const matchesSearch = !searchQuery || 
+        ing.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        ing.family?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        ing.category?.toLowerCase().includes(searchQuery.toLowerCase());
+
+      return matchesSearch;
+    });
+
+    // Sort: Core actives first, then others
+    return filtered.sort((a, b) => {
+      const aIsCore = coreActiveFamilies.includes(a.family);
+      const bIsCore = coreActiveFamilies.includes(b.family);
+
+      if (aIsCore && !bIsCore) return -1;
+      if (!aIsCore && bIsCore) return 1;
+      return a.name?.localeCompare(b.name || '') || 0;
+    });
+  }, [ingredients, searchQuery]);
+
+  // Map ActiveInstances to proxy ingredient IDs for scoring
+  const proxyIngredientMap = useMemo(() => {
+    return {
+      RETINOID_mild: allIngredients.find(i => i.name === 'Retinol')?.id,
+      RETINOID_medium: allIngredients.find(i => i.name === 'Retinaldehyde')?.id,
+      RETINOID_strong: allIngredients.find(i => i.name === 'Tretinoin')?.id,
+      AHA_mild: allIngredients.find(i => i.name === 'Lactic Acid')?.id,
+      AHA_medium: allIngredients.find(i => i.name === 'Mandelic Acid')?.id,
+      AHA_strong: allIngredients.find(i => i.name === 'Glycolic Acid')?.id,
+      BHA_mild: allIngredients.find(i => i.name === 'Salicylic Acid')?.id,
+      BHA_medium: allIngredients.find(i => i.name === 'Salicylic Acid')?.id,
+      BHA_strong: allIngredients.find(i => i.name === 'Salicylic Acid')?.id,
+      NIACINAMIDE_mild: allIngredients.find(i => i.name === 'Niacinamide')?.id,
+      NIACINAMIDE_medium: allIngredients.find(i => i.name === 'Niacinamide')?.id,
+      NIACINAMIDE_strong: allIngredients.find(i => i.name === 'Niacinamide')?.id,
+      VITC_LAA_mild: allIngredients.find(i => i.name === 'Ascorbic Acid')?.id,
+      VITC_LAA_medium: allIngredients.find(i => i.name === 'Ascorbic Acid')?.id,
+      VITC_LAA_strong: allIngredients.find(i => i.name === 'Ascorbic Acid')?.id,
+      AZELAIC_mild: allIngredients.find(i => i.name === 'Azelaic Acid')?.id,
+      AZELAIC_medium: allIngredients.find(i => i.name === 'Azelaic Acid')?.id,
+      AZELAIC_strong: allIngredients.find(i => i.name === 'Azelaic Acid')?.id,
+    };
+  }, [allIngredients]);
+
+  // Convert ActiveInstances to ingredient IDs for compatibility with existing scoring
+  const effectiveIngredientIds = useMemo(() => {
+    if (isProfessional) {
+      return selectedIngredients;
+    }
+    
+    return activeInstances
+      .map(ai => {
+        // Premium users: Look up by ingredient name if available
+        if (ai.ingredient_name) {
+          const ingredient = allIngredients.find(ing => ing.name === ai.ingredient_name);
+          return ingredient?.id;
+        }
+        // Free users: Use proxy mapping by family + strength
+        return proxyIngredientMap[`${ai.family}_${ai.strength}`];
+      })
+      .filter(Boolean);
+  }, [activeInstances, proxyIngredientMap, isProfessional, selectedIngredients, allIngredients]);
+
+  // Find all interactions for selected ingredients using rule priority
+  const relevantInteractions = useMemo(() => {
+    const results = [];
+    const selectedIngredientObjs = allIngredients.filter(ing => effectiveIngredientIds.includes(ing.id));
+    
+    for (let i = 0; i < selectedIngredientObjs.length; i++) {
+      for (let j = i + 1; j < selectedIngredientObjs.length; j++) {
+        const ingA = selectedIngredientObjs[i];
+        const ingB = selectedIngredientObjs[j];
+        
+        // Step 1: Look for ingredient-specific exception rule (highest priority)
+        const specificRule = compatibilityRules.find(rule =>
+          (rule.ingredient_a_id === ingA.id && rule.ingredient_b_id === ingB.id) ||
+          (rule.ingredient_a_id === ingB.id && rule.ingredient_b_id === ingA.id)
+        );
+        
+        if (specificRule) {
+          results.push({
+            ingredientA: ingA.name,
+            ingredientB: ingB.name,
+            interaction_type: specificRule.relationship.toLowerCase(),
+            severity: specificRule.severity,
+            mechanism: specificRule.mechanism,
+            explanation: `${ingA.name} and ${ingB.name}: ${specificRule.mechanism}`,
+            recommendation: specificRule.recommended_action || '',
+            condition_payload: specificRule.condition_payload
+          });
+          continue;
+        }
+        
+        // Step 2: Use family rule
+        const [famA, famB] = [ingA.family, ingB.family].sort();
+        const familyRule = familyRules.find(rule =>
+          (rule.family_a === famA && rule.family_b === famB)
+        );
+        
+        if (familyRule && familyRule.relationship !== 'NEUTRAL') {
+          results.push({
+            ingredientA: ingA.name,
+            ingredientB: ingB.name,
+            interaction_type: familyRule.relationship.toLowerCase(),
+            severity: familyRule.severity,
+            mechanism: familyRule.mechanism,
+            explanation: `${ingA.family} and ${ingB.family}: ${familyRule.mechanism}`,
+            recommendation: familyRule.recommended_action || '',
+            condition_payload: familyRule.condition_payload
+          });
+        }
+      }
+    }
+    
+    return results;
+  }, [effectiveIngredientIds, familyRules, compatibilityRules, allIngredients]);
+
+  // Get skin sensitivity level from profile
+  const sensitivityLevel = userProfile?.sensitivity_level || 1;
+
+  const toggleIngredient = (ingredientId) => {
+    setSelectedIngredients(prev => 
+      prev.includes(ingredientId) 
+        ? prev.filter(id => id !== ingredientId)
+        : [...prev, ingredientId]
+    );
+  };
+
+  const handleFamilyClick = (family) => {
+    setConfiguringFamily(family);
+  };
+
+  const handleSaveActiveInstance = (instance) => {
+    setActiveInstances(prev => {
+      const existingIndex = prev.findIndex(ai => ai.family === instance.family);
+      if (existingIndex >= 0) {
+        const updated = [...prev];
+        updated[existingIndex] = instance;
+        return updated;
+      }
+      return [...prev, instance];
+    });
+  };
+
+  const handleRemoveActiveInstance = (family) => {
+    setActiveInstances(prev => prev.filter(ai => ai.family !== family));
+  };
+
+  // Group ingredients by family
+  const familyGroups = useMemo(() => {
+    const coreActiveFamilies = ['RETINOID', 'AHA', 'BHA', 'NIACINAMIDE', 'VITC_LAA', 'AZELAIC'];
+    const paidFamilies = ['RETINOID', 'AHA', 'BHA', 'PHA', 'BPO', 'NIACINAMIDE', 'VITC_LAA', 'VITC_DERIV', 'AZELAIC', 'PEPTIDE', 'BARRIER', 'HYDRATOR', 'OCCLUSIVE'];
+    const allowedFamilies = isPremium || isProfessional ? paidFamilies : coreActiveFamilies;
+
+    const groups = {};
+
+    allIngredients.forEach(ing => {
+      if (allowedFamilies.includes(ing.family)) {
+        if (!groups[ing.family]) {
+          groups[ing.family] = [];
+        }
+        groups[ing.family].push(ing);
+      }
+    });
+
+    return groups;
+  }, [allIngredients, isPremium, isProfessional]);
+
+  // Count issues
+  const issueCount = relevantInteractions.filter(i => i.interaction_type === 'conflict' || i.interaction_type === 'conditional').length;
+  const synergisticCount = relevantInteractions.filter(i => i.interaction_type === 'synergistic').length;
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-violet-50/30">
+      {/* Hero Section */}
+      <div className="relative overflow-hidden">
+        <div className="absolute inset-0 bg-gradient-to-r from-violet-600/5 to-rose-600/5" />
+        <div className="absolute top-0 right-0 w-96 h-96 bg-violet-200/30 rounded-full blur-3xl" />
+        <div className="absolute bottom-0 left-0 w-96 h-96 bg-rose-200/30 rounded-full blur-3xl" />
+        
+        <div className="relative max-w-7xl mx-auto px-4 py-12 md:py-20">
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="text-center max-w-3xl mx-auto mb-12"
+          >
+            <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-violet-100 text-violet-700 text-sm font-medium mb-6">
+              <Beaker className="w-4 h-4" />
+              Skincare Intelligence Engine
+            </div>
+            <h1 className="text-4xl md:text-6xl font-bold text-slate-900 mb-6 leading-tight">
+              Master Your
+              <span className="bg-gradient-to-r from-violet-600 to-rose-600 bg-clip-text text-transparent"> Skincare </span>
+              Chemistry
+            </h1>
+            <p className="text-lg md:text-xl text-slate-600 leading-relaxed">
+              Select your active ingredients and instantly discover if they work together, 
+              cancel each other out, or create irritation. Build the perfect routine.
+            </p>
+          </motion.div>
+
+
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <div className="max-w-7xl mx-auto px-4 pb-20">
+        {/* Profile Setup */}
+        <div className="grid md:grid-cols-2 gap-8 mb-10">
+          <div>
+            <h2 className="text-xl font-bold text-slate-900 mb-4">Skin Type</h2>
+            <SkinTypeSelector value={skinType} onChange={setSkinType} />
+          </div>
+
+          <div>
+            <h2 className="text-xl font-bold text-slate-900 mb-4">Experience Level</h2>
+            <div className="grid grid-cols-3 gap-3">
+              {['beginner', 'intermediate', 'advanced'].map(level => (
+                <button
+                  key={level}
+                  onClick={() => setExperienceLevel(level)}
+                  className={cn(
+                    "p-4 rounded-2xl border-2 transition-all capitalize",
+                    experienceLevel === level
+                      ? "border-violet-500 bg-violet-50"
+                      : "border-slate-200 bg-white hover:border-slate-300"
+                  )}
+                >
+                  <p className="font-semibold text-slate-900">{level}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Skin Goal */}
+        <div className="mb-8">
+          <h2 className="text-xl font-bold text-slate-900 mb-4">Primary Skin Goal</h2>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            {[
+              { value: 'acne', label: 'Acne', emoji: '🎯' },
+              { value: 'aging', label: 'Anti-Aging', emoji: '⏳' },
+              { value: 'pigmentation', label: 'Brightening', emoji: '✨' },
+              { value: 'rosacea', label: 'Redness', emoji: '🌸' },
+              { value: 'barrier', label: 'Barrier Repair', emoji: '🛡️' }
+            ].map(goal => (
+              <button
+                key={goal.value}
+                onClick={() => setSkinGoal(goal.value)}
+                className={cn(
+                  "p-4 rounded-2xl border-2 transition-all",
+                  skinGoal === goal.value
+                    ? "border-violet-500 bg-violet-50"
+                    : "border-slate-200 bg-white hover:border-slate-300"
+                )}
+              >
+                <span className="text-2xl mb-2 block">{goal.emoji}</span>
+                <p className="text-sm font-semibold text-slate-900">{goal.label}</p>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Skin Conditions Selector */}
+        <div className="mb-10">
+          <h2 className="text-xl font-bold text-slate-900 mb-2">Skin Conditions (Optional)</h2>
+          <p className="text-sm text-slate-600 mb-4">
+            Select any specific conditions to get personalized risk assessments and recommendations
+          </p>
+          <SkinConditionSelector value={skinConditions} onChange={setSkinConditions} />
+        </div>
+
+        {/* Tabs */}
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-8">
+          <TabsList className="bg-white border border-slate-200 p-1.5 rounded-2xl inline-flex">
+            <TabsTrigger 
+              value="ingredients" 
+              className="rounded-xl px-6 py-3 data-[state=active]:bg-slate-900 data-[state=active]:text-white"
+            >
+              <Beaker className="w-4 h-4 mr-2" />
+              Ingredients
+            </TabsTrigger>
+            <TabsTrigger 
+              value="compatibility" 
+              className="rounded-xl px-6 py-3 data-[state=active]:bg-slate-900 data-[state=active]:text-white"
+            >
+              <Sparkles className="w-4 h-4 mr-2" />
+              Compatibility
+              {issueCount > 0 && (
+                <span className="ml-2 px-2 py-0.5 rounded-full bg-rose-500 text-white text-xs">
+                  {issueCount}
+                </span>
+              )}
+            </TabsTrigger>
+            <TabsTrigger 
+              value="routine" 
+              className="rounded-xl px-6 py-3 data-[state=active]:bg-slate-900 data-[state=active]:text-white"
+            >
+              <Zap className="w-4 h-4 mr-2" />
+              Routine Builder
+            </TabsTrigger>
+            <TabsTrigger 
+              value="barrier" 
+              className="rounded-xl px-6 py-3 data-[state=active]:bg-slate-900 data-[state=active]:text-white"
+            >
+              <Shield className="w-4 h-4 mr-2" />
+              Barrier Health
+            </TabsTrigger>
+            </TabsList>
+
+          {/* Ingredients Tab */}
+          <TabsContent value="ingredients" className="space-y-6">
+            {/* Search */}
+            <div className="flex flex-col md:flex-row gap-4">
+              <div className="relative flex-1">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+                <Input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search ingredients..."
+                  className="pl-12 h-14 rounded-2xl border-2 border-slate-200 focus:border-violet-500"
+                />
+              </div>
+              {(selectedIngredients.length > 0 || activeInstances.length > 0) && (
+                <Button
+                  onClick={() => {
+                    setSelectedIngredients([]);
+                    setActiveInstances([]);
+                  }}
+                  variant="outline"
+                  className="h-14 px-6 rounded-2xl border-2"
+                >
+                  Clear All ({!isProfessional ? activeInstances.length : selectedIngredients.length})
+                </Button>
+              )}
+            </div>
+
+            {/* Selected Ingredients Bar */}
+            <AnimatePresence>
+              {(selectedIngredients.length > 0 || activeInstances.length > 0) && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="flex flex-wrap gap-2 p-4 rounded-2xl bg-slate-900 text-white"
+                >
+                  <span className="text-sm text-slate-400 mr-2 self-center">Selected:</span>
+                  {!isProfessional ? (
+                    // Free & Premium users: Show active instances
+                    activeInstances.map(ai => (
+                      <motion.button
+                        key={ai.family}
+                        layout
+                        initial={{ scale: 0 }}
+                        animate={{ scale: 1 }}
+                        exit={{ scale: 0 }}
+                        onClick={() => handleRemoveActiveInstance(ai.family)}
+                        className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 transition-colors"
+                      >
+                        <span>
+                          {ai.ingredient_name 
+                            ? `${ai.concentration} ${ai.ingredient_name}` 
+                            : `${ai.family.replace(/_/g, ' ')} (${ai.strength})`}
+                        </span>
+                        <X className="w-3.5 h-3.5" />
+                      </motion.button>
+                    ))
+                  ) : (
+                    // Professional users: Show selected ingredients
+                    selectedIngredients.map(ingId => {
+                      const ing = allIngredients.find(i => i.id === ingId);
+                      return (
+                        <motion.button
+                          key={ingId}
+                          layout
+                          initial={{ scale: 0 }}
+                          animate={{ scale: 1 }}
+                          exit={{ scale: 0 }}
+                          onClick={() => toggleIngredient(ingId)}
+                          className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 transition-colors"
+                        >
+                          <span>{ing?.name || 'Unknown'}</span>
+                          <X className="w-3.5 h-3.5" />
+                        </motion.button>
+                      );
+                    })
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Ingredients Grid */}
+            {ingredientsLoading ? (
+              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {[1, 2, 3, 4, 5, 6].map(i => (
+                  <div key={i} className="h-48 rounded-3xl bg-slate-100 animate-pulse" />
+                ))}
+              </div>
+            ) : !isProfessional ? (
+              // Free & Premium users: Show family-level cards
+              <>
+                <div className="mb-4 p-4 rounded-2xl bg-blue-50 border border-blue-200">
+                  <p className="text-sm text-blue-900">
+                    <strong>Select ingredient categories</strong> with custom strength and frequency. 
+                    {!isPremium && (
+                      <span> Upgrade to Premium for extended ingredient families or Professional for granular ingredient control.</span>
+                    )}
+                    {isPremium && (
+                      <span> Access to all ingredient families. Upgrade to Professional for granular ingredient-level selection.</span>
+                    )}
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                  {Object.keys(familyGroups).map(family => (
+                    <FamilyCard
+                      key={family}
+                      family={family}
+                      activeInstance={activeInstances.find(ai => ai.family === family)}
+                      onClick={() => handleFamilyClick(family)}
+                      ingredientCount={familyGroups[family].length}
+                    />
+                  ))}
+                </div>
+
+                {!isPremium && (
+                  <div className="mt-6 p-4 rounded-2xl bg-gradient-to-r from-violet-50 to-purple-50 border-2 border-violet-200 text-center">
+                    <Lock className="w-8 h-8 mx-auto mb-2 text-violet-600" />
+                    <p className="text-sm font-medium text-violet-900 mb-1">
+                      Unlock Premium Features
+                    </p>
+                    <p className="text-xs text-violet-600 mb-3">
+                      Get adaptive progression, weekly calendars, and tolerance tracking
+                    </p>
+                    <Link to={createPageUrl('Subscription')}>
+                      <Button size="sm" className="bg-violet-600 hover:bg-violet-700 rounded-xl">
+                        <Crown className="w-4 h-4 mr-2" />
+                        Upgrade to Premium
+                      </Button>
+                    </Link>
+                  </div>
+                )}
+              </>
+            ) : filteredIngredients.length === 0 ? (
+              <div className="text-center py-20">
+                <Beaker className="w-12 h-12 mx-auto mb-4 text-slate-300" />
+                <p className="text-slate-500">No ingredients found</p>
+              </div>
+            ) : (
+              // Professional users: Show individual ingredient cards
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                {filteredIngredients.map(ingredient => (
+                  <IngredientCard
+                    key={ingredient.id}
+                    ingredient={ingredient}
+                    isSelected={selectedIngredients.includes(ingredient.id)}
+                    onToggle={() => toggleIngredient(ingredient.id)}
+                    onShowDetails={setDetailIngredient}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* Product Recommendations */}
+            {isProfessional && <ProductRecommendations selectedIngredients={effectiveIngredientIds} />}
+          </TabsContent>
+
+          {/* Compatibility Tab */}
+          <TabsContent value="compatibility" className="space-y-6">
+          {effectiveIngredientIds.length < 2 ? (
+              <div className="text-center py-20 bg-white rounded-3xl border-2 border-slate-200">
+                <Sparkles className="w-12 h-12 mx-auto mb-4 text-slate-300" />
+                <p className="text-slate-500 mb-2">Select at least 2 ingredients to check compatibility</p>
+                <Button 
+                  onClick={() => setActiveTab('ingredients')}
+                  variant="outline" 
+                  className="rounded-2xl"
+                >
+                  Go to Ingredients
+                </Button>
+              </div>
+            ) : (
+              <>
+                {/* Risk Analysis Panel */}
+                <RiskScorePanel
+                  selectedIngredients={effectiveIngredientIds}
+                  ingredients={allIngredients}
+                  familyRules={familyRules}
+                  compatibilityRules={compatibilityRules}
+                  skinType={skinType}
+                  skinConditions={skinConditions}
+                  sensitivityLevel={sensitivityLevel}
+                />
+
+                {/* Interactions List */}
+                <div className="space-y-4">
+                  {relevantInteractions.length > 0 ? (
+                    relevantInteractions.map((interaction, i) => (
+                      <CompatibilityResult
+                        key={i}
+                        interaction={interaction}
+                        ingredientA={interaction.ingredientA}
+                        ingredientB={interaction.ingredientB}
+                      />
+                    ))
+                  ) : (
+                    <div className="text-center py-12 bg-white rounded-3xl border-2 border-slate-200">
+                      <CheckCircle2 className="w-12 h-12 mx-auto mb-4 text-emerald-500" />
+                      <p className="text-slate-900 font-semibold mb-1">All Compatible!</p>
+                      <p className="text-slate-500">No known interactions between selected ingredients</p>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </TabsContent>
+
+          {/* Routine Builder Tab */}
+          <TabsContent value="routine" className="space-y-6">
+            {effectiveIngredientIds.length === 0 ? (
+              <div className="text-center py-20 bg-white rounded-3xl border-2 border-slate-200">
+                <Zap className="w-12 h-12 mx-auto mb-4 text-slate-300" />
+                <p className="text-slate-500 mb-2">Select ingredients to build your routine</p>
+                <Button 
+                  onClick={() => setActiveTab('ingredients')}
+                  variant="outline" 
+                  className="rounded-2xl"
+                >
+                  Go to Ingredients
+                </Button>
+              </div>
+            ) : (
+              <>
+                <ProgressionPanel 
+                  progressionState={progressionState}
+                  isPremium={isPremium}
+                  weeklyScores={progressionState?.weekly_scores || []}
+                />
+
+                {isPremium || isProfessional ? (
+                  <RoutineGenerator
+                    selectedIngredients={effectiveIngredientIds}
+                    ingredients={allIngredients}
+                    skinType={skinType}
+                    skinConditions={skinConditions}
+                    familyRules={familyRules}
+                    compatibilityRules={compatibilityRules}
+                    experienceLevel={experienceLevel}
+                    skinGoal={skinGoal}
+                    oneTapMode={experienceLevel === 'beginner'}
+                    progressionState={progressionState}
+                    isPremium={isPremium}
+                  />
+                ) : (
+                  <StaticRoutineSuggestion
+                    selectedIngredients={effectiveIngredientIds}
+                    ingredients={allIngredients}
+                    skinType={skinType}
+                    skinConditions={skinConditions}
+                  />
+                )}
+
+                {/* Manual Sequencing Section */}
+                <div className="mt-12">
+                  <h2 className="text-2xl font-bold text-slate-900 mb-6 text-center">
+                    Ingredient Application Order
+                  </h2>
+                  <div className="grid md:grid-cols-2 gap-8">
+                    <div className="bg-white rounded-3xl border-2 border-slate-200 p-6">
+                      <RoutineBuilder
+                        selectedIngredients={effectiveIngredientIds}
+                        ingredients={allIngredients}
+                        timeOfDay="am"
+                        skinConditions={skinConditions}
+                      />
+                    </div>
+                    <div className="bg-white rounded-3xl border-2 border-slate-200 p-6">
+                      <RoutineBuilder
+                        selectedIngredients={effectiveIngredientIds}
+                        ingredients={allIngredients}
+                        timeOfDay="pm"
+                        skinConditions={skinConditions}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+          </TabsContent>
+
+          {/* Barrier Health Tab */}
+          <TabsContent value="barrier">
+            {effectiveIngredientIds.length === 0 ? (
+              <div className="text-center py-20 bg-white rounded-3xl border-2 border-slate-200">
+                <Shield className="w-12 h-12 mx-auto mb-4 text-slate-300" />
+                <p className="text-slate-500 mb-2">Select ingredients to analyze barrier health</p>
+                <Button 
+                  onClick={() => setActiveTab('ingredients')}
+                  variant="outline" 
+                  className="rounded-2xl"
+                >
+                  Go to Ingredients
+                </Button>
+              </div>
+            ) : (
+              <BarrierHealthMeter
+                selectedIngredients={effectiveIngredientIds}
+                ingredients={allIngredients}
+              />
+            )}
+          </TabsContent>
+
+          </Tabs>
+
+        {/* Subscription CTA */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.5 }}
+          className="mt-16 p-8 rounded-3xl bg-gradient-to-r from-violet-600 to-purple-600 text-white text-center"
+        >
+          <Crown className="w-12 h-12 mx-auto mb-4 opacity-80" />
+          <h2 className="text-2xl md:text-3xl font-bold mb-3">
+            Unlock Full Skincare Intelligence
+          </h2>
+          <p className="text-violet-200 mb-6 max-w-2xl mx-auto">
+            Get unlimited ingredient checks, personalized routines, barrier health tracking, 
+            and expert recommendations tailored to your skin type.
+          </p>
+          <Link to={createPageUrl('Subscription')}>
+            <Button size="lg" className="bg-white text-violet-700 hover:bg-violet-50 rounded-2xl px-8 h-14">
+              View Plans
+              <ChevronRight className="w-5 h-5 ml-2" />
+            </Button>
+          </Link>
+        </motion.div>
+      </div>
+
+      {/* Active Instance Configuration Modal */}
+      {configuringFamily && (
+        <ActiveInstanceModal
+          family={configuringFamily}
+          existingInstance={activeInstances.find(ai => ai.family === configuringFamily)}
+          onSave={handleSaveActiveInstance}
+          onClose={() => setConfiguringFamily(null)}
+          isPremium={isPremium}
+        />
+      )}
+
+      {/* Ingredient Detail Modal */}
+      {detailIngredient && (
+        <IngredientDetailModal
+          ingredient={detailIngredient}
+          onClose={() => setDetailIngredient(null)}
+          subscriptionTier={userProfile?.subscription_tier || 'free'}
+          allIngredients={allIngredients}
+          familyRules={familyRules}
+        />
+      )}
+      </div>
+      );
+      }
